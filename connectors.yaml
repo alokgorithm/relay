@@ -1,0 +1,18 @@
+connectors:
+  shop:
+    command: ["python", "-m", "connectors.shop"]
+    scopes: [read]
+  payments:
+    command: ["python", "-m", "connectors.payments"]
+    scopes: [read, write]
+    approval_required:
+      create_refund: { amount_gt: 5000 }
+    timeout_s: 10
+    retry: { max: 3, on: [timeout, unavailable] }
+  helpdesk:
+    command: ["python", "-m", "connectors.helpdesk"]
+    scopes: [read, write]
+  chat:
+    command: ["python", "-m", "connectors.chat"]
+    scopes: [read, write]
+# inventory: added live during demo

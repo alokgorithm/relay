@@ -1,0 +1,17 @@
+provider:
+  base_url: ${LLM_BASE_URL}
+  api_key: ${LLM_API_KEY}
+  model: ${LLM_MODEL}
+  tool_mode: native  # native | json
+  temperature: 0.0
+  max_retries: 3
+  timeout_s: 60
+
+agent:
+  max_steps: 30
+  verify_after_action: true
+  reconcile_on_resume: true
+
+logging:
+  level: INFO
+  trace_file: trace.jsonl

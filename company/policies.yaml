@@ -1,0 +1,8 @@
+refunds:
+  window_days: 30
+  auto_approve_max: 5000
+  require_email_match: true
+  max_refunds_per_order: 1
+blocked_actions:
+  - "bulk refunds"                   # no tool exists; also denied if attempted via loop
+untrusted_sources: [ticket.body, customer.notes]

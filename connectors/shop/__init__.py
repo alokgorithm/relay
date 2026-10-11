@@ -1,0 +1,1 @@
+"""Shop connector package."""

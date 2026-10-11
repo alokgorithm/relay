@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "relay"
+version = "0.1.0"
+description = "Autonomous customer-support operations agent using MCP connectors"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.0.0",
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "httpx>=0.25.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+relay = "cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent", "connectors", "company", "viewers"]
