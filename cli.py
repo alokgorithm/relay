@@ -261,7 +261,7 @@ async def _run_shift(config: dict) -> None:
         
         # Save report
         report_path = RUNS_DIR / f"shift_report_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
-        report_path.write_text(report)
+        report_path.write_text(report, encoding="utf-8")
         
         console.print(f"\n{'='*60}")
         console.print(Panel(f"Shift complete: {resolved} resolved, {escalated} escalated, {waiting} waiting, {failed} failed", style="green"))

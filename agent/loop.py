@@ -666,7 +666,7 @@ class AgentLoop:
         if playbooks_dir.exists():
             for pb_file in playbooks_dir.glob("*.md"):
                 name = pb_file.stem
-                content = pb_file.read_text()
+                content = pb_file.read_text(encoding="utf-8")
                 # Extract first line as description
                 first_line = content.strip().split("\n")[0].lstrip("# ").strip()
                 playbooks[name] = {

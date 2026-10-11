@@ -238,7 +238,7 @@ def view_runs():
         for rdir in sorted(RUNS_DIR.iterdir(), reverse=True):
             if rdir.is_dir() and (rdir / "state.json").exists():
                 try:
-                    state_data = json.loads((rdir / "state.json").read_text())
+                    state_data = json.loads((rdir / "state.json").read_text(encoding="utf-8"))
                     runs.append(state_data)
                 except Exception:
                     pass
