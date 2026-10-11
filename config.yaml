@@ -4,7 +4,7 @@ provider:
   model: ${LLM_MODEL}
   tool_mode: native  # native | json
   temperature: 0.0
-  max_retries: 3
+  max_retries: 5
   timeout_s: 60
 
 agent:

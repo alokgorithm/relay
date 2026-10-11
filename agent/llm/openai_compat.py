@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 import time
 import logging
 from typing import Any
@@ -24,7 +25,7 @@ class OpenAICompatLLM:
         api_key: str,
         model: str,
         tool_mode: str = "native",  # native | json
-        max_retries: int = 3,
+        max_retries: int = 5,
         timeout: float = 60.0,
     ):
         self.model = model
@@ -66,8 +67,13 @@ class OpenAICompatLLM:
                 return self._parse_response(response)
             except RateLimitError as e:
                 last_error = e
-                wait = min(2 ** attempt, 30)
-                logger.warning(f"Rate limited. Retrying in {wait}s...")
+                # Parse retry duration if provided in error message (e.g. Groq "try again in 24.4s")
+                match = re.search(r"try again in ([\d\.]+)s", str(e))
+                if match:
+                    wait = float(match.group(1)) + 1.0
+                else:
+                    wait = min(2 ** attempt * 2, 35)
+                logger.warning(f"Rate limited. Retrying in {wait:.1f}s...")
                 time.sleep(wait)
             except APITimeoutError as e:
                 last_error = e

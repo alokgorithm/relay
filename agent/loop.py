@@ -336,9 +336,13 @@ class AgentLoop:
             
             state.messages.append({"role": "user", "content": act_msg})
             
+            # Send system prompt + current act context to stay within model token limits
+            system_msg = state.messages[0] if (state.messages and state.messages[0].get("role") == "system") else {"role": "system", "content": "You are Relay, an autonomous customer support agent."}
+            call_messages = [system_msg, {"role": "user", "content": act_msg}]
+            
             # LLM decides what tool to call
-            tracer.llm_call(len(state.messages), len(tools))
-            response = self.llm.chat(state.messages, tools=tools)
+            tracer.llm_call(len(call_messages), len(tools))
+            response = self.llm.chat(call_messages, tools=tools)
             tracer.llm_response(response.content, len(response.tool_calls), response.usage)
             
             if response.content:
