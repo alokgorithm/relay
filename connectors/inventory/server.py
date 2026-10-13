@@ -1,7 +1,6 @@
 """Inventory MCP connector server simulating warehouse inventory and replacements."""
 
-from datetime import datetime, timezone
-import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -13,7 +12,7 @@ try:
         ToolAnnotations,
     )
     from ..common.chaos import chaos
-    from ..common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from ..common.db import dict_from_row, get_connection, rows_to_dicts
     from .seed import init_db, seed_data
 except ImportError:
     from connectors.common.annotations import (
@@ -22,7 +21,11 @@ except ImportError:
         ToolAnnotations,
     )
     from connectors.common.chaos import chaos
-    from connectors.common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from connectors.common.db import (
+        dict_from_row,
+        get_connection,
+        rows_to_dicts,
+    )
     from connectors.inventory.seed import init_db, seed_data
 
 CONNECTOR_NAME = "inventory"
@@ -55,6 +58,7 @@ def _ensure_database() -> None:
 
 @mcp.tool(
     name="get_product",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get product details including price, category, and current stock by product ID. [READ]",
 )
 def get_product(product_id: int) -> dict[str, Any]:
@@ -87,11 +91,12 @@ def get_product(product_id: int) -> dict[str, Any]:
         conn.close()
 
 
-get_product._annotations = READ_ONLY
+setattr(get_product, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="search_products",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Search products by name, SKU, or category. [READ]",
 )
 def search_products(query: str) -> list[dict[str, Any]]:
@@ -123,11 +128,12 @@ def search_products(query: str) -> list[dict[str, Any]]:
         conn.close()
 
 
-search_products._annotations = READ_ONLY
+setattr(search_products, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="get_stock",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get current available stock quantity for a product ID. [READ]",
 )
 def get_stock(product_id: int) -> dict[str, Any]:
@@ -168,11 +174,12 @@ def get_stock(product_id: int) -> dict[str, Any]:
         conn.close()
 
 
-get_stock._annotations = READ_ONLY
+setattr(get_stock, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="check_stock_by_sku",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Check if a product is in stock by its SKU code. [READ]",
 )
 def check_stock_by_sku(sku: str) -> dict[str, Any]:
@@ -216,11 +223,12 @@ def check_stock_by_sku(sku: str) -> dict[str, Any]:
         conn.close()
 
 
-check_stock_by_sku._annotations = READ_ONLY
+setattr(check_stock_by_sku, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="create_replacement_order",
+    annotations=WRITE_DESTRUCTIVE.to_mcp_annotations(),
     description="Create a replacement order for an existing order and decrement inventory stock. [WRITE, DESTRUCTIVE]",
 )
 def create_replacement_order(
@@ -247,6 +255,7 @@ def create_replacement_order(
     conn = get_connection(CONNECTOR_NAME)
     try:
         with conn:
+            conn.execute("BEGIN IMMEDIATE")
             product = conn.execute(
                 """
                 SELECT id, name, sku, price, stock_quantity, category
@@ -276,7 +285,7 @@ def create_replacement_order(
                 (product_id,),
             )
 
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             cursor = conn.execute(
                 """
                 INSERT INTO replacement_orders (original_order_id, product_id, status, created_at)
@@ -300,11 +309,12 @@ def create_replacement_order(
         conn.close()
 
 
-create_replacement_order._annotations = WRITE_DESTRUCTIVE
+setattr(create_replacement_order, "_annotations", WRITE_DESTRUCTIVE)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="get_replacement_order",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get replacement order status and details by replacement ID. [READ]",
 )
 def get_replacement_order(replacement_id: int) -> dict[str, Any]:
@@ -339,11 +349,12 @@ def get_replacement_order(replacement_id: int) -> dict[str, Any]:
         conn.close()
 
 
-get_replacement_order._annotations = READ_ONLY
+setattr(get_replacement_order, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="list_replacements_for_order",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="List all replacement orders created for a specific original order ID. [READ]",
 )
 def list_replacements_for_order(order_id: int) -> list[dict[str, Any]]:
@@ -376,7 +387,7 @@ def list_replacements_for_order(order_id: int) -> list[dict[str, Any]]:
         conn.close()
 
 
-list_replacements_for_order._annotations = READ_ONLY
+setattr(list_replacements_for_order, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 if __name__ == "__main__":

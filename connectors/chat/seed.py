@@ -1,7 +1,6 @@
 """Database initialization and seeding for the Chat MCP connector."""
 
-from datetime import datetime, timezone
-import sys
+from datetime import UTC, datetime
 
 try:
     from ..common.db import get_connection
@@ -60,7 +59,7 @@ def init_db(drop_existing: bool = False) -> None:
 def seed_data() -> None:
     """Populate default channels and welcome message."""
     conn = get_connection(CONNECTOR_NAME)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     try:
         with conn:
             channels = ["support-ops", "approvals", "general"]

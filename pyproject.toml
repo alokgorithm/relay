@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Autonomous customer-support operations agent using MCP connectors"
 requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.0.0",
-    "openai>=1.0.0",
+    "mcp>=1.0.0,<2.0.0",
+    "openai>=3.28.0,<4.0.0",
     "pydantic>=2.0.0",
     "typer>=0.9.0",
     "rich>=13.0.0",
@@ -18,8 +18,17 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx2>=2.12.0,<3.0.0"]
+viewer = ["fastapi>=0.110", "uvicorn>=0.27"]
+
 [project.scripts]
 relay = "cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent", "connectors", "company", "viewers"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"cli.py" = "cli.py"
+"config.yaml" = "config.yaml"
+"connectors.yaml" = "connectors.yaml"

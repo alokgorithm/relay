@@ -1,22 +1,17 @@
 """Unit and integration tests for Relay MCP connectors."""
 
-import asyncio
-from datetime import datetime
-import os
-from pathlib import Path
-import sqlite3
 import pytest
 
-from connectors.shop import seed as shop_seed
-from connectors.shop import server as shop_server
-from connectors.payments import seed as payments_seed
-from connectors.payments import server as payments_server
-from connectors.helpdesk import seed as helpdesk_seed
-from connectors.helpdesk import server as helpdesk_server
 from connectors.chat import seed as chat_seed
 from connectors.chat import server as chat_server
+from connectors.helpdesk import seed as helpdesk_seed
+from connectors.helpdesk import server as helpdesk_server
 from connectors.inventory import seed as inventory_seed
 from connectors.inventory import server as inventory_server
+from connectors.payments import seed as payments_seed
+from connectors.payments import server as payments_server
+from connectors.shop import seed as shop_seed
+from connectors.shop import server as shop_server
 
 
 def setup_module():

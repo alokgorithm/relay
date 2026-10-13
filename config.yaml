@@ -9,6 +9,7 @@ provider:
 
 agent:
   max_steps: 30
+  max_llm_calls: 20  # Per ticket across resumes; null disables. Provider retries are additional.
   verify_after_action: true
   reconcile_on_resume: true
 

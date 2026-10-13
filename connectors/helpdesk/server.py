@@ -1,7 +1,6 @@
 """Helpdesk MCP connector server simulating a support ticket system (Zendesk-like)."""
 
-from datetime import datetime, timezone
-import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -9,23 +8,33 @@ from mcp.server.fastmcp import FastMCP
 try:
     from ..common.annotations import (
         READ_ONLY,
-        WRITE_SAFE,
         WRITE_IDEMPOTENT,
+        WRITE_SAFE,
         ToolAnnotations,
     )
     from ..common.chaos import chaos
-    from ..common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from ..common.db import dict_from_row, get_connection, get_db_path, rows_to_dicts
     from .seed import VALID_AUTHORS, VALID_STATUSES, init_db, seed_data
 except ImportError:
     from connectors.common.annotations import (
         READ_ONLY,
-        WRITE_SAFE,
         WRITE_IDEMPOTENT,
+        WRITE_SAFE,
         ToolAnnotations,
     )
     from connectors.common.chaos import chaos
-    from connectors.common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
-    from connectors.helpdesk.seed import VALID_AUTHORS, VALID_STATUSES, init_db, seed_data
+    from connectors.common.db import (
+        dict_from_row,
+        get_connection,
+        get_db_path,
+        rows_to_dicts,
+    )
+    from connectors.helpdesk.seed import (
+        VALID_AUTHORS,
+        VALID_STATUSES,
+        init_db,
+        seed_data,
+    )
 
 CONNECTOR_NAME = "helpdesk"
 
@@ -53,6 +62,7 @@ def _ensure_database() -> None:
 
 @mcp.tool(
     name="list_open_tickets",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="List all support tickets with status 'open' or 'pending'. [READ ONLY]",
 )
 def list_open_tickets() -> list[dict[str, Any]]:
@@ -79,11 +89,12 @@ def list_open_tickets() -> list[dict[str, Any]]:
         conn.close()
 
 
-list_open_tickets._annotations = READ_ONLY
+setattr(list_open_tickets, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="get_ticket",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get ticket details along with its full conversation history and replies. [READ ONLY]",
 )
 def get_ticket(ticket_id: int) -> dict[str, Any]:
@@ -129,11 +140,12 @@ def get_ticket(ticket_id: int) -> dict[str, Any]:
         conn.close()
 
 
-get_ticket._annotations = READ_ONLY
+setattr(get_ticket, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="get_tickets_by_customer",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get all support tickets submitted by a specific customer email. [READ ONLY]",
 )
 def get_tickets_by_customer(customer_email: str) -> list[dict[str, Any]]:
@@ -165,11 +177,12 @@ def get_tickets_by_customer(customer_email: str) -> list[dict[str, Any]]:
         conn.close()
 
 
-get_tickets_by_customer._annotations = READ_ONLY
+setattr(get_tickets_by_customer, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="add_reply",
+    annotations=WRITE_SAFE.to_mcp_annotations(),
     description="Add a customer-facing public reply to a support ticket. [WRITE]",
 )
 def add_reply(ticket_id: int, body: str, author: str = "agent") -> dict[str, Any]:
@@ -195,7 +208,7 @@ def add_reply(ticket_id: int, body: str, author: str = "agent") -> dict[str, Any
             f"Invalid author '{author}'. Must be one of: {', '.join(VALID_AUTHORS)}"
         )
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection(CONNECTOR_NAME)
     try:
         with conn:
@@ -228,11 +241,12 @@ def add_reply(ticket_id: int, body: str, author: str = "agent") -> dict[str, Any
         conn.close()
 
 
-add_reply._annotations = WRITE_SAFE
+setattr(add_reply, "_annotations", WRITE_SAFE)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="add_internal_note",
+    annotations=WRITE_SAFE.to_mcp_annotations(),
     description="Add a private internal note to a support ticket (hidden from customer). [WRITE]",
 )
 def add_internal_note(ticket_id: int, body: str) -> dict[str, Any]:
@@ -251,7 +265,7 @@ def add_internal_note(ticket_id: int, body: str) -> dict[str, Any]:
     if not body or not body.strip():
         raise ValueError("Internal note body cannot be empty")
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection(CONNECTOR_NAME)
     try:
         with conn:
@@ -284,11 +298,12 @@ def add_internal_note(ticket_id: int, body: str) -> dict[str, Any]:
         conn.close()
 
 
-add_internal_note._annotations = WRITE_SAFE
+setattr(add_internal_note, "_annotations", WRITE_SAFE)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="set_status",
+    annotations=WRITE_IDEMPOTENT.to_mcp_annotations(),
     description="Update the status of a support ticket. [WRITE, IDEMPOTENT]",
 )
 def set_status(ticket_id: int, status: str) -> dict[str, Any]:
@@ -310,7 +325,7 @@ def set_status(ticket_id: int, status: str) -> dict[str, Any]:
             f"Invalid status '{status}'. Must be one of: {', '.join(VALID_STATUSES)}"
         )
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection(CONNECTOR_NAME)
     try:
         with conn:
@@ -338,11 +353,12 @@ def set_status(ticket_id: int, status: str) -> dict[str, Any]:
         conn.close()
 
 
-set_status._annotations = WRITE_IDEMPOTENT
+setattr(set_status, "_annotations", WRITE_IDEMPOTENT)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="set_tags",
+    annotations=WRITE_IDEMPOTENT.to_mcp_annotations(),
     description="Set or replace the tags on a support ticket (comma-separated string). [WRITE, IDEMPOTENT]",
 )
 def set_tags(ticket_id: int, tags: str) -> dict[str, Any]:
@@ -363,7 +379,7 @@ def set_tags(ticket_id: int, tags: str) -> dict[str, Any]:
         t.strip() for t in tags.split(",") if t.strip()
     )
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection(CONNECTOR_NAME)
     try:
         with conn:
@@ -391,7 +407,7 @@ def set_tags(ticket_id: int, tags: str) -> dict[str, Any]:
         conn.close()
 
 
-set_tags._annotations = WRITE_IDEMPOTENT
+setattr(set_tags, "_annotations", WRITE_IDEMPOTENT)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 if __name__ == "__main__":

@@ -1,9 +1,12 @@
 from __future__ import annotations
-import json
+
+import os
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -24,6 +27,7 @@ class ActionRecord(BaseModel):
     status: Literal["started", "succeeded", "failed", "compensated", "unknown"] = "started"
     result: dict[str, Any] | None = None
     compensation: str | None = None  # e.g. "payments.cancel_refund"
+    before: dict[str, Any] | None = None  # read-back baseline for non-idempotent appends
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -33,6 +37,8 @@ class HumanRequest(BaseModel):
     approval_id: int | None = None
     message: str
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    tool: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunState(BaseModel):
@@ -58,7 +64,18 @@ class RunState(BaseModel):
         run_dir.mkdir(parents=True, exist_ok=True)
         state_file = run_dir / "state.json"
         self.updated_at = datetime.now().isoformat()
-        state_file.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        # Replace only after the complete snapshot is durable; a crash must not
+        # truncate the last recoverable state.
+        fd, temporary = tempfile.mkstemp(dir=run_dir, prefix="state-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(self.model_dump_json(indent=2))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, state_file)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     
     @classmethod
     def load(cls, run_dir: Path) -> RunState:
@@ -66,7 +83,11 @@ class RunState(BaseModel):
         state_file = run_dir / "state.json"
         if not state_file.exists():
             raise FileNotFoundError(f"No state found at {state_file}")
-        return cls.model_validate_json(state_file.read_text(encoding="utf-8"))
+        state = cls.model_validate_json(state_file.read_text(encoding="utf-8"))
+        # The WAL can be ahead of the snapshot when a process dies mid-call.
+        from agent.action_log import ActionLog
+        ActionLog(run_dir).replay(state)
+        return state
     
     def get_active_step(self) -> Step | None:
         """Get the currently active step."""
@@ -94,7 +115,7 @@ class RunState(BaseModel):
     
     def has_action_with_key(self, key: str) -> ActionRecord | None:
         """Check if an action with this idempotency key already exists."""
-        for action in self.actions:
+        for action in reversed(self.actions):
             if action.key == key:
                 return action
         return None

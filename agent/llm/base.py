@@ -1,5 +1,7 @@
 from __future__ import annotations
-from typing import Protocol, Any
+
+from typing import Any, Protocol
+
 from pydantic import BaseModel
 
 

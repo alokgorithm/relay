@@ -1,10 +1,10 @@
 """Payments MCP connector server simulating a payment processor (charges, refunds, idempotency)."""
 
-from datetime import datetime, timezone
-import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 try:
     from ..common.annotations import (
@@ -13,7 +13,7 @@ try:
         ToolAnnotations,
     )
     from ..common.chaos import chaos
-    from ..common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from ..common.db import dict_from_row, get_connection, get_db_path, rows_to_dicts
     from .seed import init_db, seed_data
 except ImportError:
     from connectors.common.annotations import (
@@ -22,7 +22,12 @@ except ImportError:
         ToolAnnotations,
     )
     from connectors.common.chaos import chaos
-    from connectors.common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from connectors.common.db import (
+        dict_from_row,
+        get_connection,
+        get_db_path,
+        rows_to_dicts,
+    )
     from connectors.payments.seed import init_db, seed_data
 
 CONNECTOR_NAME = "payments"
@@ -49,6 +54,7 @@ def _ensure_database() -> None:
 
 @mcp.tool(
     name="get_charge",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get payment charge details by charge ID. [READ ONLY]",
 )
 def get_charge(charge_id: int) -> dict[str, Any]:
@@ -81,11 +87,12 @@ def get_charge(charge_id: int) -> dict[str, Any]:
         conn.close()
 
 
-get_charge._annotations = READ_ONLY
+setattr(get_charge, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="get_charge_by_order",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get payment charge details for a specific shop order ID. [READ ONLY]",
 )
 def get_charge_by_order(order_id: int) -> dict[str, Any]:
@@ -118,11 +125,12 @@ def get_charge_by_order(order_id: int) -> dict[str, Any]:
         conn.close()
 
 
-get_charge_by_order._annotations = READ_ONLY
+setattr(get_charge_by_order, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="list_refunds",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="List all refunds for a specific payment charge ID. [READ ONLY]",
 )
 def list_refunds(charge_id: int) -> list[dict[str, Any]]:
@@ -153,11 +161,12 @@ def list_refunds(charge_id: int) -> list[dict[str, Any]]:
         conn.close()
 
 
-list_refunds._annotations = READ_ONLY
+setattr(list_refunds, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="list_refunds_by_order",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="List all refunds for a specific shop order ID. [READ ONLY]",
 )
 def list_refunds_by_order(order_id: int) -> list[dict[str, Any]]:
@@ -189,16 +198,17 @@ def list_refunds_by_order(order_id: int) -> list[dict[str, Any]]:
         conn.close()
 
 
-list_refunds_by_order._annotations = READ_ONLY
+setattr(list_refunds_by_order, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="create_refund",
+    annotations=WRITE_IDEMPOTENT.to_mcp_annotations(),
     description="Create a refund for a payment charge with idempotency key protection. [WRITE, DESTRUCTIVE, IDEMPOTENT]",
 )
 def create_refund(
-    charge_id: int,
-    amount: int,
+    charge_id: StrictInt,
+    amount: StrictInt,
     reason: str,
     idempotency_key: str,
 ) -> dict[str, Any]:
@@ -220,21 +230,28 @@ def create_refund(
     chaos.maybe_fail("create_refund", CONNECTOR_NAME)
     _ensure_database()
 
-    if not idempotency_key or not idempotency_key.strip():
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
         raise ValueError("An idempotency_key is required to process a refund")
 
-    if amount <= 0:
-        raise ValueError(f"Refund amount must be greater than zero, got {amount}")
+    if type(amount) is not int or amount <= 0:
+        raise ValueError(f"Refund amount must be a positive integer, got {amount}")
+    if type(charge_id) is not int or charge_id <= 0:
+        raise ValueError("charge_id must be a positive integer")
+    idempotency_key = idempotency_key.strip()
 
     conn = get_connection(CONNECTOR_NAME)
     try:
         with conn:
+            # Lock before reading the balance/key so concurrent writers cannot overspend.
+            conn.execute("BEGIN IMMEDIATE")
             # Check for existing refund with same idempotency key
             existing = conn.execute(
                 "SELECT * FROM refunds WHERE idempotency_key = ?", (idempotency_key,)
             ).fetchone()
             if existing:
-                return dict(existing)  # Return existing, don't create duplicate
+                if existing["charge_id"] != charge_id or existing["amount"] != amount:
+                    raise ValueError("Idempotency key is already bound to a different charge or amount")
+                return dict(existing)  # Reason changes do not change the financial operation.
 
             # Verify charge exists
             charge = conn.execute(
@@ -242,18 +259,21 @@ def create_refund(
             ).fetchone()
             if not charge:
                 raise ValueError(f"Charge with ID {charge_id} not found")
+            if charge["status"] not in ("succeeded", "partially_refunded"):
+                raise ValueError(f"Charge #{charge_id} is not refundable (status: {charge['status']})")
 
             # Check existing refunds against charge amount
             refunded_row = conn.execute(
                 """
-                SELECT COALESCE(SUM(amount), 0) AS total_refunded
+                SELECT COALESCE(SUM(CASE WHEN status = 'succeeded' THEN amount ELSE 0 END), 0) AS total_refunded,
+                       COALESCE(SUM(amount), 0) AS total_reserved
                 FROM refunds
-                WHERE charge_id = ? AND status = 'succeeded'
+                WHERE charge_id = ? AND status IN ('succeeded', 'pending')
                 """,
                 (charge_id,),
             ).fetchone()
             total_refunded = refunded_row["total_refunded"] if refunded_row else 0
-            remaining = charge["amount"] - total_refunded
+            remaining = charge["amount"] - refunded_row["total_reserved"]
 
             if amount > remaining:
                 raise ValueError(
@@ -262,7 +282,7 @@ def create_refund(
                 )
 
             # Insert refund record
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             cursor = conn.execute(
                 """
                 INSERT INTO refunds (charge_id, amount, currency, status, reason, idempotency_key, created_at)
@@ -296,7 +316,7 @@ def create_refund(
         conn.close()
 
 
-create_refund._annotations = WRITE_IDEMPOTENT
+setattr(create_refund, "_annotations", WRITE_IDEMPOTENT)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 if __name__ == "__main__":

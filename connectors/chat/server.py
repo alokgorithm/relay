@@ -1,32 +1,37 @@
 """Chat MCP connector server simulating team chat and approval workflows."""
 
-from datetime import datetime, timezone
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import StrictInt
 
 try:
     from ..common.annotations import (
         READ_ONLY,
-        WRITE_SAFE,
         WRITE_IDEMPOTENT,
+        WRITE_SAFE,
         ToolAnnotations,
     )
     from ..common.chaos import chaos
-    from ..common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from ..common.db import dict_from_row, get_connection, get_db_path, rows_to_dicts
     from .seed import init_db, seed_data
 except ImportError:
+    from connectors.chat.seed import init_db, seed_data
     from connectors.common.annotations import (
         READ_ONLY,
-        WRITE_SAFE,
         WRITE_IDEMPOTENT,
+        WRITE_SAFE,
         ToolAnnotations,
     )
     from connectors.common.chaos import chaos
-    from connectors.common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
-    from connectors.chat.seed import init_db, seed_data
+    from connectors.common.db import (
+        dict_from_row,
+        get_connection,
+        get_db_path,
+        rows_to_dicts,
+    )
 
 CONNECTOR_NAME = "chat"
 
@@ -74,6 +79,7 @@ def _get_channel_by_name(conn: sqlite3.Connection, channel_name: str) -> sqlite3
 
 @mcp.tool(
     name="list_channels",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="List all channels in the chat workspace. [READ]",
 )
 def list_channels() -> list[dict[str, Any]]:
@@ -89,11 +95,12 @@ def list_channels() -> list[dict[str, Any]]:
         conn.close()
 
 
-list_channels._annotations = READ_ONLY
+setattr(list_channels, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="get_messages",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get recent messages from a channel (accepts channel name with or without '#'). [READ]",
 )
 def get_messages(channel_name: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -126,11 +133,12 @@ def get_messages(channel_name: str, limit: int = 20) -> list[dict[str, Any]]:
         conn.close()
 
 
-get_messages._annotations = READ_ONLY
+setattr(get_messages, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="post_message",
+    annotations=WRITE_SAFE.to_mcp_annotations(),
     description="Post a new message to a channel. [WRITE]",
 )
 def post_message(
@@ -148,7 +156,7 @@ def post_message(
     conn = get_connection(CONNECTOR_NAME)
     try:
         channel = _get_channel_by_name(conn, channel_name)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with conn:
             cursor = conn.execute(
                 """
@@ -171,17 +179,18 @@ def post_message(
         conn.close()
 
 
-post_message._annotations = WRITE_SAFE
+setattr(post_message, "_annotations", WRITE_SAFE)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="request_approval",
+    annotations=WRITE_SAFE.to_mcp_annotations(),
     description="Create an approval request and post notification to the channel. [WRITE]",
 )
 def request_approval(
     channel_name: str,
     summary: str,
-    amount: int | None = None,
+    amount: StrictInt | None = None,
     requestor: str = "relay-agent",
 ) -> dict[str, Any]:
     """Create an approval request and post notification to the channel."""
@@ -190,11 +199,13 @@ def request_approval(
 
     if not summary.strip():
         raise ValueError("Approval summary cannot be empty.")
+    if amount is not None and (type(amount) is not int or amount <= 0):
+        raise ValueError("Approval amount must be a positive integer")
 
     conn = get_connection(CONNECTOR_NAME)
     try:
         channel = _get_channel_by_name(conn, channel_name)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with conn:
             # 1. Insert approval record
             cursor = conn.execute(
@@ -233,11 +244,12 @@ def request_approval(
         conn.close()
 
 
-request_approval._annotations = WRITE_SAFE
+setattr(request_approval, "_annotations", WRITE_SAFE)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="get_approval",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get current approval status and details by approval ID. [READ]",
 )
 def get_approval(approval_id: int) -> dict[str, Any]:
@@ -266,11 +278,12 @@ def get_approval(approval_id: int) -> dict[str, Any]:
         conn.close()
 
 
-get_approval._annotations = READ_ONLY
+setattr(get_approval, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="list_pending_approvals",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="List all currently pending approval requests. [READ]",
 )
 def list_pending_approvals() -> list[dict[str, Any]]:
@@ -295,11 +308,12 @@ def list_pending_approvals() -> list[dict[str, Any]]:
         conn.close()
 
 
-list_pending_approvals._annotations = READ_ONLY
+setattr(list_pending_approvals, "_annotations", READ_ONLY)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 @mcp.tool(
     name="decide_approval",
+    annotations=WRITE_IDEMPOTENT.to_mcp_annotations(),
     description="Decide an approval request with 'approved' or 'denied'. [WRITE]",
 )
 def decide_approval(
@@ -319,8 +333,12 @@ def decide_approval(
     else:
         raise ValueError("decision must be 'approved' or 'denied'")
 
+    if not decided_by.strip():
+        raise ValueError("Approval decision requires a human identity")
     conn = get_connection(CONNECTOR_NAME)
     try:
+        # Serialize the read/decision/message transaction; a final decision is immutable.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT a.id, a.channel_id, c.name AS channel_name, a.requestor,
@@ -344,7 +362,7 @@ def decide_approval(
                 f"Approval #{approval_id} has already been {current_status} by {row['decided_by']}."
             )
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         channel_id = row["channel_id"]
         summary = row["summary"]
 
@@ -385,7 +403,7 @@ def decide_approval(
         conn.close()
 
 
-decide_approval._annotations = WRITE_IDEMPOTENT
+setattr(decide_approval, "_annotations", WRITE_IDEMPOTENT)  # noqa: B010 - Dynamic function compatibility attribute.
 
 
 if __name__ == "__main__":

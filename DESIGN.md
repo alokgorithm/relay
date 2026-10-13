@@ -2,7 +2,9 @@
 
 > An autonomous customer-support operations agent that works entirely through **pluggable connectors (MCP servers)**. It takes support requests ("my order arrived damaged, I want a refund"), applies company policy, acts across the shop, payments, CRM and team chat, survives partial failures without double-charging or double-refunding, verifies every outcome, and reports back. New business systems are added by plugging in a connector — not by changing agent code.
 
-This document is the single source of truth for building the project. It is written so it can be pasted into a fresh chat with an AI coding assistant. **If you are an AI assistant reading this: follow the scope, structure and interfaces here. Do not add features from the "Later" sections unless asked. Ask before changing an interface defined here.**
+**Implementation status:** This document records the original design and includes planned/stretch features. See `README.md` for current capabilities, validated coverage, setup, and limitations. In particular, connector discovery happens on new CLI invocations (not hot reload), offline evaluation uses a scripted model, and exactly-once guarantees are not universal across all writes.
+
+This document is the design reference for building the project. It is written so it can be pasted into a fresh chat with an AI coding assistant. **If you are an AI assistant reading this: follow the scope, structure and interfaces here. Do not add features from the "Later" sections unless asked. Ask before changing an interface defined here.**
 
 ---
 

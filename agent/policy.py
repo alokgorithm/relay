@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 import logging
-import yaml
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from dataclasses import dataclass, field
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,9 @@ class PolicyEngine:
             if pat_clean in action_clean:
                 return PolicyDecision(action="deny", reason=f"Action matches blocked pattern: {blocked_pattern}", rule="blocked_actions")
         
+        if connector == "chat" and tool == "decide_approval":
+            return PolicyDecision(action="deny", reason="Only a human may decide approvals", rule="human_approval")
+
         # Refund-specific checks
         if tool == "create_refund":
             return self._check_refund_policy(args, facts)
@@ -64,11 +69,19 @@ class PolicyEngine:
         """Apply refund-specific policy rules."""
         refund_policy = self.policies.get("refunds", {})
         
+        amount = args.get("amount")
+        if type(amount) is not int or amount <= 0:
+            return PolicyDecision(action="deny", reason="Refund amount must be a positive integer", rule="refund_amount")
+
+        # These values must be supplied from connector evidence, not LLM memory.
+        # Missing evidence must never turn into a permissive default.
         # Check email match
         if refund_policy.get("require_email_match", True):
             ticket_email = facts.get("ticket_email", "")
             order_email = facts.get("order_customer_email", "")
-            if ticket_email and order_email and ticket_email.lower() != order_email.lower():
+            if not all(isinstance(email, str) and email.strip() for email in (ticket_email, order_email)):
+                return PolicyDecision(action="deny", reason="Missing customer identity evidence", rule="require_email_match")
+            if ticket_email.strip().lower() != order_email.strip().lower():
                 return PolicyDecision(
                     action="deny",
                     reason=f"Email mismatch: ticket from '{ticket_email}' but order belongs to '{order_email}'. Possible fraud.",
@@ -78,7 +91,9 @@ class PolicyEngine:
         # Check refund window
         window_days = refund_policy.get("window_days", 30)
         days_since_delivery = facts.get("days_since_delivery")
-        if days_since_delivery is not None and days_since_delivery > window_days:
+        if type(days_since_delivery) is not int or days_since_delivery < 0:
+            return PolicyDecision(action="deny", reason="Missing or invalid delivery evidence", rule="window_days")
+        if days_since_delivery > window_days:
             return PolicyDecision(
                 action="deny",
                 reason=f"Delivery was {days_since_delivery} days ago, outside {window_days}-day refund window.",
@@ -87,7 +102,9 @@ class PolicyEngine:
         
         # Check max refunds per order
         max_refunds = refund_policy.get("max_refunds_per_order", 1)
-        existing_refunds = facts.get("existing_refund_count", 0)
+        existing_refunds = facts.get("existing_refund_count")
+        if type(existing_refunds) is not int or existing_refunds < 0:
+            return PolicyDecision(action="deny", reason="Missing or invalid refund history", rule="max_refunds_per_order")
         if existing_refunds >= max_refunds:
             return PolicyDecision(
                 action="deny",
@@ -97,7 +114,6 @@ class PolicyEngine:
         
         # Check auto-approve threshold
         auto_approve_max = refund_policy.get("auto_approve_max", 5000)
-        amount = args.get("amount", 0)
         if amount > auto_approve_max:
             return PolicyDecision(
                 action="needs_approval",

@@ -1,8 +1,6 @@
 """Database initialization and seeding for the Helpdesk MCP connector."""
 
-from datetime import datetime, timedelta, timezone
-import sqlite3
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
 try:
     from ..common.db import get_connection, get_db_path
@@ -78,7 +76,7 @@ def init_db(drop_existing: bool = True) -> None:
 def seed_data() -> None:
     """Seed 10 support tickets covering all demo twists and demo scenarios."""
     conn = get_connection(CONNECTOR_NAME)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # 10 demo tickets matching instructions
     tickets_data = [
@@ -224,7 +222,7 @@ def print_summary() -> None:
         reply_count = conn.execute("SELECT COUNT(*) FROM ticket_replies").fetchone()[0]
         db_path = get_db_path(CONNECTOR_NAME)
 
-        print(f"=== Helpdesk Connector Database Seeded ===")
+        print("=== Helpdesk Connector Database Seeded ===")
         print(f"Database location: {db_path}")
         print(f"Total tickets: {ticket_count}")
         print(f"Total replies: {reply_count}")

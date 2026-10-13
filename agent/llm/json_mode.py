@@ -1,17 +1,19 @@
 from __future__ import annotations
+
 import json
 import logging
 from typing import Any
+from uuid import uuid4
 
-from agent.llm.base import LLM, LLMResponse, ToolCall
+from agent.llm.base import LLMResponse, ToolCall
 
 logger = logging.getLogger(__name__)
 
 JSON_TOOL_SYSTEM = """You are a tool-using assistant. When you need to use a tool, respond ONLY with a JSON object:
-{"thought": "your reasoning", "tool": "tool_name", "args": {"param": "value"}}
+{{"thought": "your reasoning", "tool": "tool_name", "args": {{"param": "value"}}}}
 
 When you don't need a tool, respond with:
-{"thought": "your reasoning", "response": "your response text"}
+{{"thought": "your reasoning", "response": "your response text"}}
 
 Available tools:
 {tool_descriptions}"""
@@ -35,7 +37,7 @@ class JsonModeLLM:
         temperature: float = 0.0,
     ) -> LLMResponse:
         if not tools:
-            return self.inner.chat(messages, temperature=temperature)
+            return self.inner.chat(messages, json_schema=json_schema, temperature=temperature)
         
         # Convert tools to text descriptions
         tool_desc = self._format_tools(tools)
@@ -43,20 +45,31 @@ class JsonModeLLM:
         # Modify system message to include tool descriptions
         modified_messages = self._inject_tool_system(messages, tool_desc)
         
+        allowed_tools = {tool["function"]["name"] for tool in tools}
         # Try to get valid JSON response with repair
+        last_content: str | None = None
         for repair_attempt in range(3):
             response = self.inner.chat(modified_messages, temperature=temperature)
+            last_content = response.content
             
             if not response.content:
                 return response
             
             try:
                 parsed = json.loads(response.content)
+                if not isinstance(parsed, dict):
+                    raise ValueError("Response must be a JSON object")  # noqa: TRY004 - Malformed provider envelopes must enter ValueError repair.
                 if "tool" in parsed:
+                    if not isinstance(parsed["tool"], str) or parsed["tool"] not in allowed_tools:
+                        raise ValueError("Tool must be one of the available tools")
+                    if not isinstance(parsed.get("args", {}), dict):
+                        raise ValueError("Tool args must be a JSON object")
+                    if parsed.get("thought") is not None and not isinstance(parsed["thought"], str):
+                        raise ValueError("Thought must be a string")
                     return LLMResponse(
                         content=parsed.get("thought"),
                         tool_calls=[ToolCall(
-                            id=f"json_{repair_attempt}",
+                            id=f"json_{uuid4().hex}",
                             name=parsed["tool"],
                             arguments=parsed.get("args", {}),
                         )],
@@ -64,6 +77,8 @@ class JsonModeLLM:
                         usage=response.usage,
                     )
                 elif "response" in parsed:
+                    if not isinstance(parsed["response"], str):
+                        raise ValueError("Response text must be a string")
                     return LLMResponse(
                         content=parsed["response"],
                         tool_calls=[],
@@ -77,7 +92,7 @@ class JsonModeLLM:
                         finish_reason="stop",
                         usage=response.usage,
                     )
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, ValueError) as e:
                 logger.warning(f"JSON repair attempt {repair_attempt + 1}: {e}")
                 modified_messages.append({"role": "assistant", "content": response.content})
                 modified_messages.append({
@@ -87,7 +102,7 @@ class JsonModeLLM:
         
         # Give up on JSON, return as plain text
         return LLMResponse(
-            content=response.content if response else None,
+            content=last_content,
             tool_calls=[],
             finish_reason="stop",
         )

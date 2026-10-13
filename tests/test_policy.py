@@ -1,7 +1,8 @@
 """Unit tests for PolicyEngine (hard limits, scopes, prompt injection defense)."""
 
 import pytest
-from agent.policy import PolicyEngine, PolicyDecision
+
+from agent.policy import PolicyEngine
 
 
 @pytest.fixture

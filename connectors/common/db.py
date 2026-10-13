@@ -1,9 +1,12 @@
 import os
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 from typing import Any
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+DATA_DIR = Path(
+    os.environ.get("RELAY_DATA_DIR")
+    or Path(__file__).resolve().parent.parent.parent / "data"
+).expanduser().resolve()
 
 
 def get_db_path(connector_name: str) -> Path:

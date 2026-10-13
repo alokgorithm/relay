@@ -1,13 +1,12 @@
 """Unit tests for ActionLog, RunState persistence, and ConnectorHub."""
 
 import asyncio
-from pathlib import Path
-import pytest
 import shutil
+from pathlib import Path
 
-from agent.state import RunState, Step, ActionRecord
 from agent.action_log import ActionLog
 from agent.hub import ConnectorHub
+from agent.state import RunState, Step
 
 TMP_RUN_DIR = Path(__file__).resolve().parent.parent / "runs" / "test_run_unit"
 
@@ -36,10 +35,13 @@ def test_run_state_lifecycle():
     loaded = RunState.load(TMP_RUN_DIR)
     assert loaded.ticket_id == "101"
     assert len(loaded.plan) == 2
-    assert loaded.get_active_step().id == 1
+    active_step = loaded.get_active_step()
+    assert active_step is not None
+    assert active_step.id == 1
 
     # Advance step
     next_step = state.advance_step()
+    assert next_step is not None
     assert next_step.id == 2
     assert state.plan[0].status == "done"
     assert state.plan[1].status == "active"

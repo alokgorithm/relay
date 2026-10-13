@@ -1,14 +1,12 @@
 """Database initialization and seeding for the Shop MCP connector."""
 
-from datetime import datetime, timedelta, timezone
 import json
-import sqlite3
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
 try:
-    from ..common.db import get_connection, get_db_path
+    from ..common.db import get_connection
 except ImportError:
-    from connectors.common.db import get_connection, get_db_path
+    from connectors.common.db import get_connection
 
 CONNECTOR_NAME = "shop"
 
@@ -65,7 +63,7 @@ def init_db(drop_existing: bool = True) -> None:
 def seed_data() -> None:
     """Populate customers, orders, and shipments for all demo scenarios."""
     conn = get_connection(CONNECTOR_NAME)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     customers = [
         {"id": 1, "name": "Ananya Sharma", "email": "ananya@example.com", "phone": "+91-9876543210"},

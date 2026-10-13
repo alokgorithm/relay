@@ -1,8 +1,7 @@
 """Shop MCP connector server simulating an e-commerce shop (orders, customers, shipments)."""
 
-from datetime import datetime
 import json
-import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -10,12 +9,16 @@ from mcp.server.fastmcp import FastMCP
 try:
     from ..common.annotations import READ_ONLY, ToolAnnotations
     from ..common.chaos import chaos
-    from ..common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from ..common.db import dict_from_row, get_connection, get_db_path
     from .seed import init_db, seed_data
 except ImportError:
     from connectors.common.annotations import READ_ONLY, ToolAnnotations
     from connectors.common.chaos import chaos
-    from connectors.common.db import dict_from_row, get_connection, rows_to_dicts, get_db_path
+    from connectors.common.db import (
+        dict_from_row,
+        get_connection,
+        get_db_path,
+    )
     from connectors.shop.seed import init_db, seed_data
 
 CONNECTOR_NAME = "shop"
@@ -41,6 +44,7 @@ def _ensure_database() -> None:
 
 @mcp.tool(
     name="get_order",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get order details including customer info, status, amounts, and item line details. [READ ONLY]",
 )
 def get_order(order_id: int) -> dict[str, Any]:
@@ -73,7 +77,7 @@ def get_order(order_id: int) -> dict[str, Any]:
             return {"error": f"Order #{order_id} not found", "found": False}
 
         data = dict_from_row(row)
-        if "items_json" in data and data["items_json"]:
+        if data.get("items_json"):
             try:
                 data["items"] = json.loads(data["items_json"])
             except json.JSONDecodeError:
@@ -89,6 +93,7 @@ def get_order(order_id: int) -> dict[str, Any]:
 
 @mcp.tool(
     name="search_orders",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Search orders associated with a customer's email address. [READ ONLY]",
 )
 def search_orders(customer_email: str) -> dict[str, Any]:
@@ -121,7 +126,7 @@ def search_orders(customer_email: str) -> dict[str, Any]:
         order_list = []
         for row in rows:
             od = dict_from_row(row)
-            if "items_json" in od and od["items_json"]:
+            if od.get("items_json"):
                 try:
                     od["items"] = json.loads(od["items_json"])
                 except json.JSONDecodeError:
@@ -139,6 +144,7 @@ def search_orders(customer_email: str) -> dict[str, Any]:
 
 @mcp.tool(
     name="get_customer",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get customer profile by customer ID. [READ ONLY]",
 )
 def get_customer(customer_id: int) -> dict[str, Any]:
@@ -167,6 +173,7 @@ def get_customer(customer_id: int) -> dict[str, Any]:
 
 @mcp.tool(
     name="get_customer_by_email",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get customer profile by email address. [READ ONLY]",
 )
 def get_customer_by_email(email: str) -> dict[str, Any]:
@@ -198,6 +205,7 @@ def get_customer_by_email(email: str) -> dict[str, Any]:
 
 @mcp.tool(
     name="get_shipment",
+    annotations=READ_ONLY.to_mcp_annotations(),
     description="Get shipment and delivery tracking status for an order. [READ ONLY]",
 )
 def get_shipment(order_id: int) -> dict[str, Any]:
@@ -239,11 +247,10 @@ def get_shipment(order_id: int) -> dict[str, Any]:
                 if delivered_dt.tzinfo is None:
                     now = datetime.now()
                 else:
-                    from datetime import timezone
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                 delta = now - delivered_dt
                 res["days_since_delivery"] = max(0, delta.days)
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 res["days_since_delivery"] = None
         else:
             res["days_since_delivery"] = None

@@ -6,7 +6,8 @@ and if actions should be logged.
 """
 
 from dataclasses import dataclass
-from typing import Any
+
+from mcp.types import ToolAnnotations as MCPToolAnnotations
 
 
 @dataclass
@@ -17,16 +18,16 @@ class ToolAnnotations:
     destructive: bool = False
     idempotent: bool = True
 
-    def to_mcp_annotations(self) -> dict[str, Any]:
-        return {
-            "readOnlyHint": self.read_only,
-            "destructiveHint": self.destructive,
-            "idempotentHint": self.idempotent,
-        }
+    def to_mcp_annotations(self) -> MCPToolAnnotations:
+        return MCPToolAnnotations(
+            readOnlyHint=self.read_only,
+            destructiveHint=self.destructive,
+            idempotentHint=self.idempotent,
+        )
 
 
 # Common annotation presets
 READ_ONLY = ToolAnnotations(read_only=True, destructive=False, idempotent=True)
-WRITE_SAFE = ToolAnnotations(read_only=False, destructive=False, idempotent=True)
+WRITE_SAFE = ToolAnnotations(read_only=False, destructive=False, idempotent=False)
 WRITE_DESTRUCTIVE = ToolAnnotations(read_only=False, destructive=True, idempotent=False)
 WRITE_IDEMPOTENT = ToolAnnotations(read_only=False, destructive=True, idempotent=True)

@@ -12,31 +12,37 @@ Commands:
   relay connectors tools  Show all discovered tools
 """
 from __future__ import annotations
+
 import asyncio
 import json
+import logging
 import os
 import sys
-import logging
 from datetime import datetime
+from importlib.util import find_spec
+from io import TextIOWrapper
 from pathlib import Path
 
 import typer
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.logging import RichHandler
-from dotenv import load_dotenv
 import yaml
+from dotenv import load_dotenv
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.table import Table
+
+import agent
 
 # Load environment variables
 load_dotenv()
 
 if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, TextIOWrapper):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                logging.getLogger(__name__).warning("Could not configure UTF-8 output", exc_info=True)
 
 app = typer.Typer(
     name="relay",
@@ -48,7 +54,9 @@ app.add_typer(connectors_app, name="connectors")
 
 console = Console(force_terminal=True)
 
-ROOT_DIR = Path(__file__).resolve().parent
+# Editable wheels may copy cli.py into site-packages while packages remain in
+# the checkout. Resolve shared resources beside the agent package in both modes.
+ROOT_DIR = Path(agent.__path__[0]).resolve().parent
 RUNS_DIR = ROOT_DIR / "runs"
 
 
@@ -70,14 +78,14 @@ def load_config() -> dict:
         console.print("[red]config.yaml not found[/red]")
         raise typer.Exit(1)
     
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = f.read()
     
     # Substitute ${ENV_VAR} patterns
     import re
     def replace_env(match):
         var_name = match.group(1)
-        return os.environ.get(var_name, match.group(0))
+        return os.environ.get(var_name, "")
     
     raw = re.sub(r'\$\{(\w+)\}', replace_env, raw)
     return yaml.safe_load(raw)
@@ -85,20 +93,24 @@ def load_config() -> dict:
 
 def create_llm(config: dict):
     """Create LLM instance from config."""
-    from agent.llm.openai_compat import OpenAICompatLLM
     from agent.llm.json_mode import JsonModeLLM
+    from agent.llm.openai_compat import OpenAICompatLLM
     
     provider = config.get("provider", {})
     
     base_url = provider.get("base_url", os.environ.get("LLM_BASE_URL", ""))
     api_key = provider.get("api_key", os.environ.get("LLM_API_KEY", ""))
     model = provider.get("model", os.environ.get("LLM_MODEL", "gemini-2.0-flash"))
-    tool_mode = provider.get("tool_mode", os.environ.get("TOOL_MODE", "native"))
+    tool_mode = os.environ.get("TOOL_MODE") or provider.get("tool_mode", "native")
     
-    if not base_url or not api_key:
-        console.print("[red]LLM_BASE_URL and LLM_API_KEY must be set in .env or config.yaml[/red]")
+    if not base_url or not api_key or not model:
+        console.print("[red]LLM_BASE_URL, LLM_API_KEY and LLM_MODEL must be set in .env or config.yaml[/red]")
         raise typer.Exit(1)
     
+    if tool_mode not in ("native", "json"):
+        console.print("[red]TOOL_MODE must be native or json[/red]")
+        raise typer.Exit(1)
+
     llm = OpenAICompatLLM(
         base_url=base_url,
         api_key=api_key,
@@ -116,8 +128,8 @@ def create_llm(config: dict):
 async def _run_ticket(ticket_id: str, config: dict, run_id: str | None = None) -> None:
     """Internal async ticket runner."""
     from agent.hub import ConnectorHub
-    from agent.policy import PolicyEngine
     from agent.loop import AgentLoop
+    from agent.policy import PolicyEngine
     
     hub = ConnectorHub()
     hub.load_config()
@@ -143,6 +155,7 @@ async def _run_ticket(ticket_id: str, config: dict, run_id: str | None = None) -
             hub=hub,
             policy=policy,
             max_steps=agent_config.get("max_steps", 30),
+            max_llm_calls=agent_config.get("max_llm_calls", 20),
         )
         
         state = await loop.run_ticket(ticket_id, run_id=run_id)
@@ -159,6 +172,13 @@ async def _run_ticket(ticket_id: str, config: dict, run_id: str | None = None) -
         console.print(f"Run ID: {state.run_id}")
         console.print(f"Steps executed: {state.step_count}")
         console.print(f"Actions: {len(state.actions)}")
+        usage = state.facts.get("_llm_usage", {})
+        if usage:
+            console.print(
+                f"LLM usage (returned responses): {usage.get('calls', 0)} calls, "
+                f"{usage.get('prompt_tokens', 0):,} input tokens, "
+                f"{usage.get('completion_tokens', 0):,} output tokens"
+            )
         
         if state.facts.get("summary"):
             console.print(Panel(state.facts["summary"], title="Summary"))
@@ -173,8 +193,8 @@ async def _run_ticket(ticket_id: str, config: dict, run_id: str | None = None) -
 async def _run_shift(config: dict) -> None:
     """Process all open tickets."""
     from agent.hub import ConnectorHub
-    from agent.policy import PolicyEngine
     from agent.loop import AgentLoop
+    from agent.policy import PolicyEngine
     from agent.prompts.templates import SHIFT_REPORT_TEMPLATE, TICKET_DETAIL_TEMPLATE
     
     hub = ConnectorHub()
@@ -188,11 +208,17 @@ async def _run_shift(config: dict) -> None:
         policy = PolicyEngine()
         
         agent_config = config.get("agent", {})
-        loop = AgentLoop(llm=llm, hub=hub, policy=policy, max_steps=agent_config.get("max_steps", 30))
+        loop = AgentLoop(
+            llm=llm, hub=hub, policy=policy,
+            max_steps=agent_config.get("max_steps", 30),
+            max_llm_calls=agent_config.get("max_llm_calls", 20),
+        )
         
         # Get all open tickets
         tickets = await hub.call_tool("helpdesk__list_open_tickets", {})
         ticket_list = tickets if isinstance(tickets, list) else tickets.get("tickets", [])
+        if not isinstance(ticket_list, list) or any(not isinstance(ticket, dict) for ticket in ticket_list):
+            raise ValueError("Helpdesk returned an invalid ticket list")
         
         console.print(f"Found {len(ticket_list)} open tickets")
         
@@ -200,6 +226,7 @@ async def _run_shift(config: dict) -> None:
         results = []
         total_refunded = 0
         approvals_requested = 0
+        errors = []
         
         for ticket in ticket_list:
             tid = str(ticket.get("id", ""))
@@ -221,13 +248,15 @@ async def _run_shift(config: dict) -> None:
                 color = "green" if state.status == "resolved" else "yellow" if state.status in ("escalated", "waiting_human") else "red"
                 console.print(f"  [{color}]{state.status.upper()}[/{color}]")
             except Exception as e:
+                logging.getLogger(__name__).exception("Failed to process ticket %s", tid)
+                errors.append((tid, str(e)))
                 console.print(f"  [red]ERROR: {e}[/red]")
         
         # Generate shift report
         resolved = sum(1 for r in results if r.status == "resolved")
         escalated = sum(1 for r in results if r.status == "escalated")
         waiting = sum(1 for r in results if r.status in ("waiting_customer", "waiting_human"))
-        failed = sum(1 for r in results if r.status == "failed")
+        failed = sum(1 for r in results if r.status == "failed") + len(errors)
         
         ticket_details = "\n".join(
             TICKET_DETAIL_TEMPLATE.format(
@@ -243,7 +272,7 @@ async def _run_shift(config: dict) -> None:
         
         report = SHIFT_REPORT_TEMPLATE.format(
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            total=len(results),
+            total=len(ticket_list),
             resolved=resolved,
             escalated=escalated,
             waiting=waiting,
@@ -252,7 +281,9 @@ async def _run_shift(config: dict) -> None:
             approvals_requested=approvals_requested,
             approvals_granted=sum(1 for r in results for a in r.actions if a.tool == "decide_approval" and a.result and a.result.get("decision") == "approved"),
             approvals_denied=sum(1 for r in results for a in r.actions if a.tool == "decide_approval" and a.result and a.result.get("decision") == "denied"),
-            ticket_details=ticket_details,
+            ticket_details=ticket_details + "\n" + "\n".join(
+                f"- Ticket #{tid}: FAILED — {error}" for tid, error in errors
+            ),
             flags="\n".join(
                 f"- Ticket #{r.ticket_id}: {r.facts.get('security_flag', '')}" 
                 for r in results if r.facts.get("social_engineering_detected")
@@ -261,6 +292,7 @@ async def _run_shift(config: dict) -> None:
         
         # Save report
         report_path = RUNS_DIR / f"shift_report_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
         report_path.write_text(report, encoding="utf-8")
         
         console.print(f"\n{'='*60}")
@@ -291,16 +323,21 @@ def seed():
     if inventory_seed.exists():
         seeders.append(("inventory", [python, "-m", "connectors.inventory.seed"]))
     
+    failures = []
     for name, cmd in seeders:
         try:
-            result = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True)
+            result = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, check=False)
             if result.returncode == 0:
                 console.print(f"  [green][OK][/green] {name}")
             else:
+                failures.append(name)
                 console.print(f"  [red][FAIL][/red] {name}: {result.stderr[:200]}")
-        except Exception as e:
+        except OSError as e:
+            failures.append(name)
             console.print(f"  [red][FAIL][/red] {name}: {e}")
-    
+
+    if failures:
+        raise typer.Exit(1)
     console.print("[green]Done![/green]")
 
 
@@ -406,7 +443,7 @@ def customer_reply(
         hub.load_config()
         try:
             await hub.start_all()
-            result = await hub.call_tool("helpdesk__add_reply", {
+            await hub.call_tool("helpdesk__add_reply", {
                 "ticket_id": ticket_id,
                 "body": text,
                 "author": "customer",
@@ -461,7 +498,7 @@ def connectors_tools():
             table.add_column("Description")
             table.add_column("R/W", justify="center")
             
-            for name, tool in sorted(hub.tools.items()):
+            for _name, tool in sorted(hub.tools.items()):
                 rw = "R" if tool.is_read_only else "W"
                 table.add_row(tool.connector_name, tool.name, tool.description[:60], rw)
             
@@ -477,6 +514,9 @@ def viewer(
     port: int = typer.Option(8000, "--port", "-p", help="Port for demo viewer dashboard"),
 ):
     """Launch the read-only web viewer dashboard for mock systems and runs."""
+    if find_spec("uvicorn") is None or find_spec("fastapi") is None:
+        console.print('[red]Install viewer dependencies: python -m pip install -e ".[viewer]"[/red]')
+        raise typer.Exit(1)
     import uvicorn
     console.print(f"[green]Starting Demo Viewer Dashboard at http://127.0.0.1:{port}[/green]")
     uvicorn.run("viewers.app:app", host="127.0.0.1", port=port, reload=False)

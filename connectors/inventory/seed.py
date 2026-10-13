@@ -1,7 +1,5 @@
 """Database initialization and seeding for the Inventory MCP connector."""
 
-from datetime import datetime, timezone
-import sqlite3
 from typing import Any
 
 try:

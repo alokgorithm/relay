@@ -1,8 +1,6 @@
 """Database initialization and seeding for the Payments MCP connector."""
 
-from datetime import datetime, timedelta, timezone
-import sqlite3
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
 try:
     from ..common.db import get_connection
@@ -57,7 +55,7 @@ def init_db(drop_existing: bool = True) -> None:
 def seed_data() -> None:
     """Populate charges matching shop orders (1042-1051) and initial refund for #1044."""
     conn = get_connection(CONNECTOR_NAME)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Orders matching shop connector:
     # 1042: ₹3200 (delivered 4 days ago)
