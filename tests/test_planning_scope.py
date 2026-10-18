@@ -44,7 +44,7 @@ def test_decision_messages_preserve_all_observations_and_latest_snapshot():
 
     from agent.prompts.templates import ACT_PROMPT
 
-    prefix = ACT_PROMPT.split("{plan_display}", 1)[0]
+    prefix = ACT_PROMPT.split("{active_step}", 1)[0]
     messages = [
         {"role": "system", "content": "Policies"},
         {"role": "user", "content": "Original ticket"},

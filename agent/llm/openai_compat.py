@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import time
+from urllib.parse import urlparse
 from datetime import UTC
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -60,6 +61,8 @@ class OpenAICompatLLM:
     
     Covers: Gemini, Groq, OpenRouter, Ollama, LM Studio, Claude, etc.
     """
+    _openrouter: bool = False
+    _session_id: str | None = None
     
     def __init__(
         self,
@@ -73,12 +76,18 @@ class OpenAICompatLLM:
         self.model = model
         self.tool_mode = tool_mode
         self.max_retries = max(1, max_retries)
+        self._openrouter = urlparse(base_url).hostname in {"openrouter.ai", "www.openrouter.ai"}
+        self._session_id: str | None = None
         self.client = OpenAI(
             base_url=base_url,
             api_key=api_key,
             timeout=timeout,
             max_retries=0,  # We handle retries ourselves
         )
+
+    def set_session_id(self, session_id: str) -> None:
+        """Keep one OpenRouter agent run on the provider that owns its cache."""
+        self._session_id = session_id[:256]
     
     def chat(
         self,
@@ -100,6 +109,10 @@ class OpenAICompatLLM:
         
         if json_schema:
             kwargs["response_format"] = {"type": "json_object"}
+        if getattr(self, "_openrouter", False) and getattr(self, "_session_id", None):
+            # OpenRouter forwards this top-level field and uses it for sticky
+            # routing, preserving provider prompt-cache affinity per run.
+            kwargs["extra_body"] = {"session_id": self._session_id}
         
         last_error = None
         rate_limit_backoff = _INITIAL_RATE_LIMIT_WAIT_S
@@ -179,6 +192,13 @@ class OpenAICompatLLM:
                 "completion_tokens": response.usage.completion_tokens or 0,
                 "total_tokens": response.usage.total_tokens or 0,
             }
+            details = getattr(response.usage, "prompt_tokens_details", None)
+            cached = getattr(details, "cached_tokens", None) if details is not None else None
+            if type(cached) is int and cached >= 0:
+                usage["cached_prompt_tokens"] = cached
+            cache_writes = getattr(details, "cache_write_tokens", None) if details is not None else None
+            if type(cache_writes) is int and cache_writes >= 0:
+                usage["cache_write_tokens"] = cache_writes
         
         return LLMResponse(
             content=message.content,

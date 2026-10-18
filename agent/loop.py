@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 RUNS_DIR = ROOT_DIR / "runs"
+RECENT_TOOL_BATCHES = 2
 
 
 # Built-in control tools (not connectors)
@@ -401,7 +402,7 @@ class AgentLoop:
             
             # Keep complete tool-call/result groups: the next decision must
             # observe real read results and errors, not just action-log writes.
-            call_messages = self._decision_messages(state.messages)
+            call_messages = self._decision_messages(state)
             
             # LLM decides what tool to call
             response = self._call_llm(state, tracer, call_messages, tools, "execution")
@@ -464,6 +465,9 @@ class AgentLoop:
             state.save(tracer.run_dir)
             return None
         tracer.llm_call(len(messages), len(tools))
+        set_session = getattr(self.llm, "set_session_id", None)
+        if callable(set_session):
+            set_session(f"relay-{state.run_id}")
         response = self.llm.chat(messages, tools=tools)
         usage["calls"] += 1
         for key, count in response.usage.items():
@@ -482,8 +486,12 @@ class AgentLoop:
         """Select from current state, not an earlier conversation snapshot."""
         selected = playbooks.get(state.playbook) if state.playbook is not None else None
         catalog = self._playbook_catalog(playbooks)
-        workflow = (f"Selected playbook: {state.playbook}\n{selected['content']}\n\nCatalog for workflow changes:\n{catalog}"
-                    if selected else f"No known playbook selected. Select an exact slug using remember.\n{catalog}")
+        # The full procedure is useful during planning, but repeating it with
+        # every execution decision is needlessly expensive. Runtime policy and
+        # verifier checks remain authoritative; the model receives a compact
+        # identifier, connector list and current plan instead.
+        workflow = (f"{state.playbook}: {selected['description']}. Follow the active plan and use only its relevant connectors."
+                    if selected else f"No known playbook selected. Select an exact slug using remember. Catalog: {catalog}")
         connectors = []
         if selected:
             section = re.search(r"^## Connectors Needed\s*\n(.*?)(?=^## |\Z)", selected["content"], re.MULTILINE | re.DOTALL)
@@ -514,7 +522,29 @@ class AgentLoop:
             if ticket.get("customer_email") == facts.get("ticket_email"):
                 ticket.pop("customer_email", None)
             facts["ticket"] = ticket
-        return facts
+        return AgentLoop._compact_value(facts)
+
+    @staticmethod
+    def _compact_value(value: Any, *, max_string: int = 600, max_items: int = 12, depth: int = 0) -> Any:
+        """Bound model-only context without changing durable facts/evidence."""
+        if isinstance(value, str):
+            return value if len(value) <= max_string else value[:max_string] + "…[truncated]"
+        if isinstance(value, list):
+            shown = [AgentLoop._compact_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+                     for item in value[:max_items]]
+            if len(value) > max_items:
+                shown.append({"_omitted_items": len(value) - max_items})
+            return shown
+        if isinstance(value, dict):
+            items = list(value.items())
+            shown = {
+                str(key): AgentLoop._compact_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+                for key, item in items[:max_items]
+            }
+            if len(items) > max_items:
+                shown["_omitted_fields"] = len(items) - max_items
+            return shown
+        return value
 
     @staticmethod
     def _progress_signature(state: RunState) -> str:
@@ -523,14 +553,81 @@ class AgentLoop:
                            "actions": [action.model_dump() for action in state.actions]}, sort_keys=True, default=str)
 
     @staticmethod
-    def _decision_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Omit superseded plan/fact snapshots, never tool calls or results."""
-        prefix = ACT_PROMPT.split("{plan_display}", 1)[0]
+    def _decision_messages(state: RunState | list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep a small, valid tool history; exact history stays durable on disk."""
+        # Keep the legacy list-only behaviour for callers that do not have a
+        # RunState. The runtime always takes the compact, state-aware path.
+        if isinstance(state, list):
+            prefix = ACT_PROMPT.split("{active_step}", 1)[0]
+            snapshots = [i for i, message in enumerate(state)
+                         if message.get("role") == "user" and isinstance(message.get("content"), str)
+                         and message["content"].startswith(prefix)]
+            obsolete = set(snapshots[:-1])
+            return [message for i, message in enumerate(state) if i not in obsolete]
+
+        messages = state.messages
+        prefix = ACT_PROMPT.split("{active_step}", 1)[0]
         snapshots = [i for i, message in enumerate(messages)
                      if message.get("role") == "user" and isinstance(message.get("content"), str)
                      and message["content"].startswith(prefix)]
-        obsolete = set(snapshots[:-1])
-        return [message for i, message in enumerate(messages) if i not in obsolete]
+        latest_snapshot = snapshots[-1] if snapshots else None
+
+        # A complete group starts at an assistant tool-call message and includes
+        # every immediately following tool result. Never send an orphaned tool
+        # result, but do not resend an unbounded transcript on each turn.
+        groups: list[tuple[int, int]] = []
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                end = index + 1
+                while end < len(messages) and messages[end].get("role") == "tool":
+                    end += 1
+                groups.append((index, end))
+                index = end
+            else:
+                index += 1
+        omitted_groups = max(0, len(groups) - RECENT_TOOL_BATCHES)
+        omitted_tool_indexes = {
+            pos for start, end in groups[:omitted_groups] for pos in range(start, end)
+        }
+        obsolete_snapshots = set(snapshots[:-1])
+
+        result: list[dict[str, Any]] = []
+        summary_inserted = False
+        for i, message in enumerate(messages):
+            if i == 0 and message.get("role") == "system":
+                result.append(message)
+                if omitted_groups > 0:
+                    action_status = [f"{action.connector}.{action.tool}:{action.status}" for action in state.actions[-5:]]
+                    result.append({
+                        "role": "user",
+                        "content": (
+                            "Compacted prior history: exact audit records remain persisted. "
+                            f"Omitted complete tool batches: {omitted_groups}. Recent durable writes: "
+                            f"{', '.join(action_status) or 'none'}. Use current facts or re-read records as needed."
+                        ),
+                    })
+                    summary_inserted = True
+                continue
+
+            if i in obsolete_snapshots or i in omitted_tool_indexes:
+                continue
+
+            result.append(message)
+
+        if not summary_inserted and omitted_groups > 0:
+            action_status = [f"{action.connector}.{action.tool}:{action.status}" for action in state.actions[-5:]]
+            result.insert(0, {
+                "role": "user",
+                "content": (
+                    "Compacted prior history: exact audit records remain persisted. "
+                    f"Omitted complete tool batches: {omitted_groups}. Recent durable writes: "
+                    f"{', '.join(action_status) or 'none'}. Use current facts or re-read records as needed."
+                ),
+            })
+
+        return result or messages
 
     async def _process_tool_calls(
         self, state: RunState, response: LLMResponse, tracer: Tracer, action_log: ActionLog

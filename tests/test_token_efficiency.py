@@ -88,7 +88,8 @@ def test_execution_context_and_tool_bytes_preserve_exact_history(env):
     optimized = loop.llm.messages[0]
     assert state.messages[:len(original_history)] == original_history
     assert all(message in optimized for message in pair)
-    assert books["order_status"]["content"] in optimized[-1]["content"]
+    assert f"order_status: {books['order_status']['description']}" in optimized[-1]["content"]
+    assert books["order_status"]["content"] not in optimized[-1]["content"]
     assert books["replacement"]["content"] not in optimized[-1]["content"]
     assert '"_llm_usage"' not in optimized[-1]["content"]
     assert '"_internal"' not in optimized[-1]["content"]
@@ -96,12 +97,11 @@ def test_execution_context_and_tool_bytes_preserve_exact_history(env):
     assert payload["details"] not in optimized[-1]["content"]
     assert state.facts["_internal"] == original_facts["_internal"]
     baseline = deepcopy(optimized)
-    baseline[1]["content"] = baseline[1]["content"].replace(
-        loop._playbook_catalog(books), "\n\n".join(f"### {slug}\n{pb['content']}" for slug, pb in books.items()))
     baseline[-1]["content"] = ACT_PROMPT.format(
         plan_display="Inspect order", facts=json.dumps(original_facts, indent=2),
         recent_actions="\n".join(f"{a.connector}.{a.tool}({a.args}) → {a.status}: {json.dumps(a.result)}" for a in state.actions),
-        active_step="Inspect order", ticket_id="1", step_id=1, tool_name="<tool>", workflow="",
+        active_step="Inspect order", ticket_id="1", step_id=1, tool_name="<tool>",
+        workflow=books["order_status"]["content"],
     )
     _, tools = loop._execution_context(state, books)
     all_tools = loop.hub.get_all_tools() + CONTROL_TOOLS
@@ -114,6 +114,25 @@ def test_execution_context_and_tool_bytes_preserve_exact_history(env):
     persisted = RunState.load(log.run_dir)
     assert all(message in persisted.messages for message in pair)
     assert persisted.actions[0].result == payload
+
+
+def test_decision_context_compacts_old_complete_tool_batches(env):
+    loop, _, state, _, _ = env
+    state.messages = [{"role": "system", "content": "Stable policy"}]
+    prefix = ACT_PROMPT.split("{active_step}", 1)[0]
+    for index in range(5):
+        state.messages.extend([
+            {"role": "user", "content": prefix + f"step {index}"},
+            {"role": "assistant", "tool_calls": [{"id": str(index), "function": {"name": "read"}}]},
+            {"role": "tool", "tool_call_id": str(index), "content": json.dumps({"large": "evidence " * 300})},
+        ])
+    before = deepcopy(state.messages)
+    compact = loop._decision_messages(state)
+    assert state.messages == before
+    assert compact[0] == before[0]
+    assert "Omitted complete tool batches: 3" in compact[1]["content"]
+    assert {message.get("tool_call_id") for message in compact if message["role"] == "tool"} == {"3", "4"}
+    assert serialized_bytes(compact) < serialized_bytes(before) / 2
 
 
 @pytest.mark.parametrize("slug,connectors", [
@@ -135,7 +154,8 @@ def test_selected_workflow_tools_use_hub_filter(env, monkeypatch, slug, connecto
     monkeypatch.setattr(hub, "get_tools_for_playbook", filtered)
     workflow, tools = loop._execution_context(state, books)
     assert selected == [connectors]
-    assert books[slug]["content"] in workflow
+    assert workflow.startswith(f"{slug}: {books[slug]['description']}")
+    assert books[slug]["content"] not in workflow
     assert {name.split("__")[0] for name in names(tools) if "__" in name} == connectors
     assert names(CONTROL_TOOLS) <= names(tools)
     assert not {"chat__request_approval", "chat__decide_approval"} & names(tools)
@@ -183,10 +203,11 @@ def test_workflow_switch_and_replan_refresh_next_decision(env):
     assert "payments__create_refund" not in seen[0][1]
     assert "payments__create_refund" in seen[1][1]
     assert "inventory__create_replacement_order" not in seen[1][1]
-    assert books["damaged_item_refund"]["content"] in seen[1][0][-1]["content"]
+    assert f"damaged_item_refund: {books['damaged_item_refund']['description']}" in seen[1][0][-1]["content"]
+    assert books["damaged_item_refund"]["content"] not in seen[1][0][-1]["content"]
     assert books["replacement"]["content"] not in seen[1][0][-1]["content"]
     assert "Inspect refund" in seen[1][0][-1]["content"]
-    assert any(books["replacement"]["content"] in message.get("content", "") for message in state.messages)
+    assert any(books["replacement"]["description"] in (message.get("content") or "") for message in state.messages)
 
 
 def test_compact_facts_keep_changed_ticket_and_all_noninternal_values(env):
@@ -198,7 +219,8 @@ def test_compact_facts_keep_changed_ticket_and_all_noninternal_values(env):
     before = deepcopy(state.facts)
     snapshot = loop._snapshot_facts(state)
     assert snapshot["ticket"] == {"id": 1, "status": "open", "replies": before["ticket"]["replies"]}
-    assert snapshot["order"] == before["order"]
+    assert snapshot["order"]["details"].endswith("…[truncated]")
+    assert len(snapshot["order"]["details"]) < len(before["order"]["details"])
     assert snapshot["ticket_email"] == before["ticket_email"]
     assert state.facts == before
     state.facts["ticket"]["body"] = "Updated body"

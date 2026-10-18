@@ -28,6 +28,12 @@ class JsonModeLLM:
     
     def __init__(self, inner: Any):  # inner implements the LLM protocol
         self.inner = inner
+
+    def set_session_id(self, session_id: str) -> None:
+        """Forward optional provider affinity through the compatibility wrapper."""
+        setter = getattr(self.inner, "set_session_id", None)
+        if callable(setter):
+            setter(session_id)
     
     def chat(
         self,
